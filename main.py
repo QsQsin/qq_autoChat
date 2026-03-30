@@ -7,13 +7,34 @@ app = FastAPI()
 
 CQHTTP_API_URL = "http://127.0.0.1:3000"
 
-RULES = {
-    "在吗": "在的，我现在正在使用机器人自动回复。有什么事吗？",
-    "测试": "自动回复测试成功！",
-    "你好": "你好呀！[自动回复]",
-}
-DEFAULT_REPLY = "【自动回复】刚才消息收到了，如果不着急我稍后会统一回复。"
-LISTEN_USER_QQ = [] 
+LISTEN_USER_QQ = []
+
+# ================= AI 聊天配置 =================
+AI_API_URL = "https://api.deepseek.com/chat/completions" # 必须是完整的聊天补全接口URL
+AI_API_KEY = "sk-fba169611fb2449b9cb465b596b098da" # 替换为你的API KEY
+AI_MODEL = "deepseek-chat" # 替换为你的模型名称
+
+def get_ai_reply(user_message: str) -> str:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {AI_API_KEY}"
+    }
+    payload = {
+        "model": AI_MODEL,
+        "messages": [
+            {"role": "system", "content": "你是一个有帮助的QQ聊天助手。"},
+            {"role": "user", "content": user_message}
+        ],
+        "temperature": 0.7
+    }
+    try:
+        resp = requests.post(AI_API_URL, json=payload, headers=headers, timeout=10)
+        resp.raise_for_status()
+        reply_json = resp.json()
+        return reply_json['choices'][0]['message']['content']
+    except Exception as e:
+        print(f"调用AI接口失败: {e}")
+        return "不好意思，我现在脑袋有点卡壳，稍后再试吧~"
 
 @app.post("/")
 async def handle_post(request: Request):
@@ -34,7 +55,8 @@ async def handle_post(request: Request):
             
             # 避免由于配置了 reportSelfMessage 导致无限回复自己
             if sender_id != msg_data.get('self_id') and (not LISTEN_USER_QQ or sender_id in LISTEN_USER_QQ):
-                reply = RULES.get(content, DEFAULT_REPLY)
+                # 接入模型进行回复
+                reply = get_ai_reply(content)
                 send_reply(sender_id, reply)
                 
     except Exception as e:
