@@ -14,15 +14,31 @@ AI_API_URL = "https://api.deepseek.com/chat/completions" # 必须是完整的聊
 AI_API_KEY = "sk-fba169611fb2449b9cb465b596b098da" # 替换为你的API KEY
 AI_MODEL = "deepseek-chat" # 替换为你的模型名称
 
+import os
+
+# 读取个人身份与知识库
+def load_persona():
+    persona_path = "persona.txt"
+    if os.path.exists(persona_path):
+        with open(persona_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "你是一个有帮助的QQ聊天助手。"
+
+AI_PERSONA = load_persona()
+
 def get_ai_reply(user_message: str) -> str:
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {AI_API_KEY}"
     }
+    
+    # 构建包含个人身份和知识库的系统提示词
+    system_prompt = f"你现在要扮演我本人的社交账号自动回复机器人，你要模仿我的语气和认知来回答朋友的问题。\n\n以下是关于我(也就是你)的个人档案和知识库：\n{AI_PERSONA}\n\n请不要暴露你是AI或机器人的身份，尽量简短自然、像真人一样用聊天口吻回答。根据知识库里提供的信息作答，没提到的事情可以说不知道。"
+    
     payload = {
         "model": AI_MODEL,
         "messages": [
-            {"role": "system", "content": "你是一个有帮助的QQ聊天助手。"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ],
         "temperature": 0.7
