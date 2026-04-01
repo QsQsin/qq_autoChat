@@ -2,6 +2,8 @@ from fastapi import FastAPI, Request
 import uvicorn
 import requests
 import time
+import os
+import random
 
 app = FastAPI()
 
@@ -16,15 +18,41 @@ AI_MODEL = "deepseek-chat" # 替换为你的模型名称
 
 import os
 
-# 读取个人身份与知识库
-def load_persona():
+# 构建系统提示词
+def get_system_prompt():
     persona_path = "persona.txt"
+    persona = "你是一个有帮助的QQ聊天助手。"
     if os.path.exists(persona_path):
         with open(persona_path, "r", encoding="utf-8") as f:
-            return f.read()
-    return "你是一个有帮助的QQ聊天助手。"
+            persona = f.read()
 
-AI_PERSONA = load_persona()
+    # 动态读取所有表情包分类
+    memes_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memes")
+    meme_categories = []
+    if os.path.exists(memes_dir):
+        # 获取 memes 下所有的文件夹（即分类）
+        meme_categories = [d for d in os.listdir(memes_dir) if os.path.isdir(os.path.join(memes_dir, d))]
+
+    category_list_str = "、".join(meme_categories) if meme_categories else "无"
+
+    system_prompt = f"""你现在要扮演我本人的社交账号自动回复机器人，你要模仿我的语气和认知来回答朋友的问题。
+
+以下是关于我(也就是你)的个人档案和知识库：
+{persona}
+
+【表情包发送规则】
+你现在拥有发送本地表情包的能力！
+我现在的本地表情包库有以下分类：[{category_list_str}]
+
+如果当前的聊天语境非常适合发表情包烘托气氛（比如搞笑、无奈、开心、嘲讽），你可以根据情绪从上面的【分类】中选择一个最合适的，然后在回复中输出一个特殊的格式：[表情包:分类名] 。
+例如，你想发一个搞笑的表情，你可以回复：这太草了 [表情包:搞笑]
+注意：
+1. 只能使用上面列表里存在的分类名！不能自己发明！
+2. 保持真人聊天的频率，不要每句话都带表情包，看情况加！
+
+请不要暴露你是AI或机器人的身份，尽量简短自然、像真人一样聊天。"""
+    
+    return system_prompt
 
 def get_ai_reply(user_message: str) -> str:
     headers = {
@@ -32,13 +60,10 @@ def get_ai_reply(user_message: str) -> str:
         "Authorization": f"Bearer {AI_API_KEY}"
     }
     
-    # 构建包含个人身份和知识库的系统提示词
-    system_prompt = f"你现在要扮演我本人的社交账号自动回复机器人，你要模仿我的语气和认知来回答朋友的问题。\n\n以下是关于我(也就是你)的个人档案和知识库：\n{AI_PERSONA}\n\n请不要暴露你是AI或机器人的身份，尽量简短自然、像真人一样用聊天口吻回答。根据知识库里提供的信息作答，没提到的事情可以说不知道。"
-    
     payload = {
         "model": AI_MODEL,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": get_system_prompt()},
             {"role": "user", "content": user_message}
         ],
         "temperature": 0.7
@@ -50,7 +75,42 @@ def get_ai_reply(user_message: str) -> str:
         return reply_json['choices'][0]['message']['content']
     except Exception as e:
         print(f"调用AI接口失败: {e}")
-        return "不好意思，我现在脑袋有点卡壳，稍后再试吧~"
+import re
+
+# =======================================================
+def process_reply_for_memes(reply_text: str) -> str:
+    """处理带有 [表情包:分类] 标记的回复，替换为该分类下的本地真实表情包"""
+    MEMES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memes")
+    
+    # 查找所有类似 [表情包:搞笑] 的标记
+    matches = re.findall(r'\[表情包:(.*?)\]', reply_text)
+    
+    for category in matches:
+        category_dir = os.path.join(MEMES_DIR, category)
+        replaced = False
+        
+        # 检查分类文件夹是否存在
+        if os.path.exists(category_dir) and os.path.isdir(category_dir):
+            valid_images = [f for f in os.listdir(category_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))]
+            if valid_images:
+                # 在对应分类下随机抽取一张
+                chosen_image = random.choice(valid_images)
+                abs_path = os.path.join(category_dir, chosen_image).replace("\\", "/")
+                # 构造 CQ 码形式的图片
+                cq_image = f"[CQ:image,file=file:///{abs_path}]"
+                
+                # 替换文本中的标记 (只替换一个该分类的标记)
+                reply_text = reply_text.replace(f"[表情包:{category}]", cq_image, 1)
+                replaced = True
+                
+        if not replaced:
+             # 如果文件夹不存在或没图片，直接把标记删掉免得露馅
+             reply_text = reply_text.replace(f"[表情包:{category}]", "")
+             
+    # 保险起见，把所有没被正则捕获处理干净的残留表情包标记清理掉
+    reply_text = re.sub(r'\[表情包.*?\]', '', reply_text)
+        
+    return reply_text.strip()
 
 @app.post("/")
 async def handle_post(request: Request):
@@ -72,8 +132,11 @@ async def handle_post(request: Request):
             # 避免由于配置了 reportSelfMessage 导致无限回复自己
             if sender_id != msg_data.get('self_id') and (not LISTEN_USER_QQ or sender_id in LISTEN_USER_QQ):
                 # 接入模型进行回复
-                reply = get_ai_reply(content)
-                send_reply(sender_id, reply)
+                raw_reply = get_ai_reply(content)
+                # 处理可能带有的表情包发送需求
+                final_reply = process_reply_for_memes(raw_reply)
+                
+                send_reply(sender_id, final_reply)
                 
     except Exception as e:
         print(f"处理时遇到小错误: {e}")
